@@ -213,14 +213,27 @@ class TimeDotIrScraper:
             starting_year = sorted(calendar_range.years)[0]
             ending_year = sorted(calendar_range.years)[-1]
             now_time = time.strftime("%Y_%m_%d_%H_%M_%S")
-            os.makedirs("scraping_results", exist_ok=True)
             save_file_path = f"scraping_results/time_dot_ir_{starting_year}_to_{ending_year}_{calendar_range.calenadr_type}_{now_time}.json"
-        elif save_file_path and resume:
-            with open(save_file_path, "r", encoding="utf-8") as f:
-                loaded_results = json.load(f)
-                print(f"{len(loaded_results)} dates loaded successfully.")
-                loaded_dates = [list(result.keys())[0] for result in loaded_results]
-            results = loaded_results
+            print(f'Starting a new scraping process at "{save_file_path}"')
+            os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
+        else:
+            if resume:
+                if not os.path.exists(save_file_path):
+                    print(
+                        f"File not found at {save_file_path}. Starting a new scraping process at this location."
+                    )
+                    os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
+                else:
+                    with open(save_file_path, "r", encoding="utf-8") as f:
+                        results = json.load(f)
+                        print(f"{len(results)} dates loaded successfully.")
+                        loaded_dates = [list(result.keys())[0] for result in results]
+            else:
+                print(
+                    f"Previous data will be overwritten. Starting a new scraping process at {save_file_path}."
+                )
+                os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
+
         return results, loaded_dates, save_file_path
 
     def _count_scraped_data(self, save_file_path: str, pbar: tqdm) -> int:
