@@ -14,7 +14,7 @@ Usage:
 import json
 import os
 import time
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import requests
@@ -190,7 +190,7 @@ class TimeDotIrScraper:
     def _check_resumability(
         self,
         calendar_range: CalendarRange,
-        save_file_path: str | None = None,
+        save_file_path: Optional[str],
         resume: bool = True,
     ) -> tuple[list, list, str]:
         """
@@ -236,7 +236,9 @@ class TimeDotIrScraper:
 
         return results, loaded_dates, save_file_path
 
-    def _count_scraped_data(self, save_file_path: str, pbar: tqdm) -> int:
+    def _count_scraped_data(
+        self, scraping_parameters: ScrapingParameters, scraping_context: ScrapingContext
+    ) -> int:
         """
         Counts the number of scraped data entries in a JSON file and updates the progress bar description.
 
@@ -247,13 +249,17 @@ class TimeDotIrScraper:
         Returns:
             int: The number of scraped data entries in the JSON file.
         """
-        with open(save_file_path, "r", encoding="utf-8") as f:
+        with open(scraping_parameters.save_file_path, "r", encoding="utf-8") as f:
             loaded_file = json.load(f)
             count = len(loaded_file)
-            pbar.set_description(desc=f"Number of Scraped Data: {count}")
+            scraping_context.pbar.set_description(
+                desc=f"Number of Scraped Data: {count}"
+            )
         return count
 
-    def _update_save_file(self, save_file_path: str, results: list) -> None:
+    def _update_save_file(
+        self, scraping_parameters: ScrapingParameters, scraping_context: ScrapingContext
+    ) -> None:
         """
         Updates the save file with the given results.
 
@@ -264,8 +270,8 @@ class TimeDotIrScraper:
         Returns:
             None
         """
-        with open(save_file_path, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=4, ensure_ascii=False)
+        with open(scraping_parameters.save_file_path, "w", encoding="utf-8") as f:
+            json.dump(scraping_context.results, f, indent=4, ensure_ascii=False)
 
     def _scrape_single_date(
         self,
@@ -319,14 +325,8 @@ class TimeDotIrScraper:
             scraping_context.results.append({the_date: result})
             scraping_context.pbar.update()
             time.sleep(np.random.uniform(*scraping_parameters.sleep_range))
-        if scraping_parameters.save_file_path:
-            self._update_save_file(
-                scraping_parameters.save_file_path, scraping_context.results
-            )
-        if scraping_parameters.save_file_path:
-            self._count_scraped_data(
-                scraping_parameters.save_file_path, scraping_context.pbar
-            )
+        self._update_save_file(scraping_parameters, scraping_context)
+        self._count_scraped_data(scraping_parameters, scraping_context)
 
     def scrape(self, scraping_parameters: ScrapingParameters) -> list:
         """
@@ -373,4 +373,5 @@ class TimeDotIrScraper:
         with open(scraping_parameters.save_file_path, "r", encoding="utf-8") as f:
             rs = json.load(f)
             print(f"{len(rs)} dates scraped successfully.")
+        scraping_context.pbar.close()
         return scraping_context.results
