@@ -1,4 +1,4 @@
-# scraper.py
+# scraper.py - Defines the TimeDotIrScraper class for scraping holiday information from holidayapi.ir.
 """
 This module contains the TimeDotIrScraper class, which is used to scrape holiday information
 from holidayapi.ir for specific dates and calendar types.
@@ -20,6 +20,8 @@ import numpy as np
 import requests
 from httpcore import NetworkError
 from tqdm import tqdm
+
+from .types import CalendarDate, CalendarRange, ScrapingContext, ScrapingParameters
 
 
 class TimeDotIrScraper:
@@ -52,12 +54,9 @@ class TimeDotIrScraper:
     def __init__(self):
         pass
 
-    def request_for_one_day(
+    def request_single_day(
         self,
-        calenadr_type: Literal["gregorian", "jalali"],
-        year: int,
-        month: int,
-        day: int,
+        calendar_date: CalendarDate,
         sleep_range: tuple = (5, 10),
     ) -> dict:
         """
@@ -77,17 +76,20 @@ class TimeDotIrScraper:
             requests.exceptions.RequestException: If there is an issue with the request.
         """
         waiting_for_response = True
+        resend_count = 1
         while waiting_for_response:
             try:
                 result = requests.get(
-                    f"https://holidayapi.ir/{calenadr_type}/{year}/{month}/{day}",
+                    f"https://holidayapi.ir/{calendar_date.calenadr_type}/{calendar_date.year}/{calendar_date.month}/{calendar_date.day}",
                     timeout=min(sleep_range),
                 ).json()
                 waiting_for_response = False
                 time.sleep(np.random.uniform(*sleep_range))
             except requests.exceptions.RequestException as e:
                 print(f"Request Error: {e}")
+                print(f"Response status is not 200! Resending for {resend_count} times")
                 time.sleep(np.random.uniform(*sleep_range))
+                resend_count += 1
         return result
 
     def _prepare_days(self, days: set | list | Literal["whole_month"]) -> list:
@@ -186,8 +188,7 @@ class TimeDotIrScraper:
 
     def _check_resumability(
         self,
-        years: list,
-        calenadr_type: Literal["gregorian", "jalali"],
+        calendar_range: CalendarRange,
         save_file_path: str | None = None,
         resume: bool = True,
     ) -> tuple[list, list, str]:
@@ -209,13 +210,13 @@ class TimeDotIrScraper:
         results = []
         loaded_dates = []
         if not save_file_path:
-            starting_year = sorted(years)[0]
-            ending_year = sorted(years)[-1]
+            starting_year = sorted(calendar_range.years)[0]
+            ending_year = sorted(calendar_range.years)[-1]
             now_time = time.strftime("%Y_%m_%d_%H_%M_%S")
             # make the `scraper_results` directory if not exists
             os.makedirs("scraping_results", exist_ok=True)
 
-            save_file_path = f"scraping_results/time_ir_{starting_year}_to_{ending_year}_{calenadr_type}_{now_time}.json"
+            save_file_path = f"scraping_results/time_ir_{starting_year}_to_{ending_year}_{calendar_range.calenadr_type}_{now_time}.json"
 
         elif save_file_path and resume:
             with open(save_file_path, "r", encoding="utf-8") as f:
@@ -261,18 +262,67 @@ class TimeDotIrScraper:
         with open(save_file_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=4, ensure_ascii=False)
 
-    def scrap(
+    def _scrape_single_date(
         self,
-        years: list,
-        months: set | list | Literal["whole_year"],
-        days: set | list | Literal["whole_month"],
-        calenadr_type: Literal["gregorian", "jalali"],
-        sleep_range: tuple = (5, 10),
-        retry_limit_warning: int = 20,
-        halt_limit: int = 50,
-        save_file_path: str | None = None,
-        resume: bool = True,
-    ) -> list:
+        calendar_date: CalendarDate,
+        scraping_context: ScrapingContext,
+        scraping_parameters: ScrapingParameters,
+    ):
+        # skip requesting when the response is already in the results file
+        the_date = f"{calendar_date.year}/{calendar_date.month}/{calendar_date.day}"
+        if the_date in scraping_context.loaded_dates:
+            return
+        # request to get whether correct response or not
+        # the response will be checked down below
+        result = self.request_single_day(calendar_date)
+
+        # check if the result is valid
+        if not "status" in result:
+            scraping_context.results.append({the_date: result})
+            scraping_context.pbar.update()
+            time.sleep(np.random.uniform(*scraping_parameters.sleep_range))
+        # skip if the date is invalid
+        else:
+            if "invalid input!" in result["message"]:
+                return
+
+            # retry until getting the desired result
+            retry_count = 1
+            while "status" in result:
+                print(
+                    f"Server responded invalid results. Retrying for {retry_count} times"
+                )
+                time.sleep(np.random.uniform(*scraping_parameters.sleep_range))
+                result = self.request_single_day(calendar_date)
+                retry_count += 1
+                if retry_count > scraping_parameters.retry_limit_warning:
+                    print(
+                        f"""Too much retrying! ({retry_count} times)
+                        Check your network connection!"""
+                    )
+                if (
+                    scraping_parameters.halt_limit
+                    and retry_count > scraping_parameters.halt_limit
+                ):
+                    raise NetworkError(
+                        """Halt the scraping process because of passing request halt limit.
+                        Set `halt_limit` to `None` to prevent scraping from halting."""
+                    )
+
+            scraping_context.results.append({the_date: result})
+            scraping_context.pbar.update()
+            time.sleep(np.random.uniform(*scraping_parameters.sleep_range))
+
+        if scraping_parameters.save_file_path:
+            self._update_save_file(
+                scraping_parameters.save_file_path, scraping_context.results
+            )
+        if scraping_parameters.save_file_path:
+            self._count_scraped_data(
+                scraping_parameters.save_file_path, scraping_context.pbar
+            )
+
+    def scrape(self, scraping_parameters: ScrapingParameters) -> list:
         """
         Scrapes data for the specified years, months, and days based on the given calendar type.
 
@@ -293,69 +343,41 @@ class TimeDotIrScraper:
         Raises:
             NetworkError: If the number of retries exceeds the halt limit.
         """
-        results, loaded_dates, save_file_path = self._check_resumability(
-            years, calenadr_type, save_file_path, resume
+        scraping_context = ScrapingContext(params=scraping_parameters)
+
+        (
+            scraping_context.results,
+            scraping_context.loaded_dates,
+            scraping_parameters.save_file_path,
+        ) = self._check_resumability(
+            scraping_parameters.calendar_range,
+            scraping_parameters.save_file_path,
+            scraping_parameters.resume,
         )
-        days = self._prepare_days(days)
-        months = self._prepare_months(months)
-        years = self._prepare_years(years)
+        days = self._prepare_days(scraping_parameters.calendar_range.days)
+        months = self._prepare_months(scraping_parameters.calendar_range.months)
+        years = self._prepare_years(scraping_parameters.calendar_range.years)
 
         # total days to add in the for loop
-        pbar = tqdm(total=len(years) * len(months) * len(days) - len(loaded_dates))
+        scraping_context.pbar = tqdm(
+            total=len(years) * len(months) * len(days)
+            - len(scraping_context.loaded_dates)
+        )
         for year in sorted(years):
             for month in months:
                 for day in days:
-                    # skip requesting when the response is already in the results file
-                    the_date = f"{year}/{month}/{day}"
-                    if the_date in loaded_dates:
-                        continue
+                    calendar_date = CalendarDate(
+                        scraping_parameters.calendar_range.calenadr_type,
+                        year,
+                        month,
+                        day,
+                    )
+                    self._scrape_single_date(
+                        calendar_date, scraping_context, scraping_parameters
+                    )
 
-                    # request to get whether correct response or not
-                    # the response will be checked down below
-                    result = self.request_for_one_day(calenadr_type, year, month, day)
-
-                    # check if the result is valid
-                    if not "status" in result:
-                        results.append({f"{year}/{month}/{day}": result})
-                        pbar.update()
-                        time.sleep(np.random.uniform(*sleep_range))
-
-                    else:
-                        # skip if the date is invalid
-                        if "invalid input!" in result["message"]:
-                            continue
-
-                        # retry until getting the desired result
-                        retry_count = 1
-                        while "status" in result:
-                            print(f"Retrying for {retry_count} times")
-                            time.sleep(np.random.uniform(*sleep_range))
-                            result = self.request_for_one_day(
-                                calenadr_type, year, month, day
-                            )
-                            retry_count += 1
-                            if retry_count > retry_limit_warning:
-                                print(
-                                    f"""Too much retrying! ({retry_count} times)
-                                    Check your network connection!"""
-                                )
-                            if halt_limit and retry_count > halt_limit:
-                                raise NetworkError(
-                                    """Halt the scraping process because of passing requset halt limit.
-                                    Set `halt_limit` to `None` to prevent scraping from halting."""
-                                )
-
-                        results.append({f"{year}/{month}/{day}": result})
-                        pbar.update()
-                        time.sleep(np.random.uniform(*sleep_range))
-
-                    # update the save file
-                    self._update_save_file(save_file_path, results)
-                    # read the saved file to count scraped data
-                    self._count_scraped_data(save_file_path, pbar)
-
-        with open(save_file_path, "r", encoding="utf-8") as f:
+        with open(scraping_parameters.save_file_path, "r", encoding="utf-8") as f:
             rs = json.load(f)
             print(f"{len(rs)} dates scraped successfully.")
 
-        return results
+        return scraping_context.results
