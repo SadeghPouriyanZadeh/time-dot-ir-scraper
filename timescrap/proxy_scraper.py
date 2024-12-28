@@ -14,14 +14,13 @@ Usage:
 import json
 import os
 import time
-from typing import Literal, Optional
 
 import numpy as np
 import requests
 from httpcore import NetworkError
 from tqdm import tqdm
 
-from .types import CalendarDate, CalendarRange, ScrapingContext, ScrapingParameters
+from .types import CalendarDate, ScrapingContext, ScrapingParameters
 
 
 class TimeDotIrScraper:
@@ -60,14 +59,12 @@ class TimeDotIrScraper:
             Scrapes data for the specified years, months, and days based on the given calendar type.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, scraping_parameters: ScrapingParameters) -> None:
+        self.scraping_parameters = scraping_parameters
+        pbar = tqdm(total=0, desc="Initializing the scraping process...")
+        self.scraping_context = ScrapingContext(params=scraping_parameters, pbar=pbar)
 
-    def request_single_day(
-        self,
-        calendar_date: CalendarDate,
-        sleep_range: tuple = (5, 10),
-    ) -> dict:
+    def request_single_day(self, calendar_date: CalendarDate) -> dict:
         """
         Sends a GET request to the holidayapi.ir for a specific date and calendar type.
 
@@ -87,18 +84,18 @@ class TimeDotIrScraper:
             try:
                 result = requests.get(
                     f"https://holidayapi.ir/{calendar_date.calenadr_type}/{calendar_date.year}/{calendar_date.month}/{calendar_date.day}",
-                    timeout=min(sleep_range),
+                    timeout=min(self.scraping_parameters.sleep_range),
                 ).json()
                 waiting_for_response = False
-                time.sleep(np.random.uniform(*sleep_range))
+                time.sleep(np.random.uniform(*self.scraping_parameters.sleep_range))
             except requests.exceptions.RequestException as e:
                 print(f"Request Error: {e}")
                 print(f"Response status is not 200! Resending for {resend_count} times")
-                time.sleep(np.random.uniform(*sleep_range))
+                time.sleep(np.random.uniform(*self.scraping_parameters.sleep_range))
                 resend_count += 1
         return result
 
-    def _prepare_days(self, days: set | list | Literal["whole_month"]) -> list:
+    def _prepare_days(self) -> list:
         """
         Prepares a list of days for scraping.
 
@@ -118,21 +115,25 @@ class TimeDotIrScraper:
             IndexError: If the days list is empty or contains invalid day values (not between 1 and 31).
             TypeError: If the input days type is not a set, list, or the string "whole_month".
         """
-        if isinstance(days, list):
-            if len(days) == 0:
+        if isinstance(self.scraping_parameters.calendar_range.days, list):
+            if len(self.scraping_parameters.calendar_range.days) == 0:
                 raise IndexError(
                     "`days` list is empty. No day is selected to be scraped!"
                 )
-            if min(days) < 1 or max(days) > 31:
+            if (
+                min(self.scraping_parameters.calendar_range.days) < 1
+                or max(self.scraping_parameters.calendar_range.days) > 31
+            ):
                 raise IndexError("Days values are not valid.")
-            days = list(set(sorted(days)))
-        elif isinstance(days, str):
+            days = list(set(sorted(self.scraping_parameters.calendar_range.days)))
+        elif isinstance(self.scraping_parameters.calendar_range.days, str):
             days = list(range(1, 32))
         else:
             raise TypeError("Check the type annotations for input days.")
+        self.scraping_parameters.calendar_range.days = days
         return days
 
-    def _prepare_months(self, months: set | list | Literal["whole_year"]) -> list:
+    def _prepare_months(self) -> list:
         """
         Prepares and validates a list of months for scraping.
 
@@ -147,21 +148,25 @@ class TimeDotIrScraper:
             IndexError: If the months list is empty or contains invalid months values (not between 1 and 12).
             TypeError: If the input type is not a set, list, or the string "whole_year".
         """
-        if isinstance(months, list):
-            if len(months) == 0:
+        if isinstance(self.scraping_parameters.calendar_range.months, list):
+            if len(self.scraping_parameters.calendar_range.months) == 0:
                 raise IndexError(
                     "`months` list is empty. No month is selected to be scraped!"
                 )
-            if min(months) < 1 or max(months) > 12:
+            if (
+                min(self.scraping_parameters.calendar_range.months) < 1
+                or max(self.scraping_parameters.calendar_range.months) > 12
+            ):
                 raise IndexError("Months values are not valid.")
-            months = list(set(sorted(months)))
-        elif isinstance(months, str):
+            months = list(set(sorted(self.scraping_parameters.calendar_range.months)))
+        elif isinstance(self.scraping_parameters.calendar_range.months, str):
             months = list(range(1, 13))
         else:
             raise TypeError("Check the type annotations for input months.")
+        self.scraping_parameters.calendar_range.months = months
         return months
 
-    def _prepare_years(self, years: list) -> list:
+    def _prepare_years(self) -> list:
         """
         Prepares and validates a list of years.
 
@@ -178,21 +183,17 @@ class TimeDotIrScraper:
         Raises:
             IndexError: If the input list of years is less than 1 or empty.
         """
-        if min(years) < 1:
+        if min(self.scraping_parameters.calendar_range.years) < 1:
             raise IndexError("Years values are below zero.")
-        if not len(years) > 0:
+        if not len(self.scraping_parameters.calendar_range.years) > 0:
             raise IndexError(
                 "`years` list is empty. No year is selected to be scraped!"
             )
-        years = list(set(sorted(years)))
+        years = sorted(list(set(sorted(self.scraping_parameters.calendar_range.years))))
+        self.scraping_parameters.calendar_range.years = years
         return years
 
-    def _check_resumability(
-        self,
-        calendar_range: CalendarRange,
-        save_file_path: Optional[str],
-        resume: bool = True,
-    ) -> tuple[list, list, str]:
+    def _check_resumability(self) -> None:
         """
         Checks if the scraping process can be resumed from a previously saved file.
 
@@ -207,38 +208,52 @@ class TimeDotIrScraper:
                 - loaded_dates (list): List of dates loaded from the saved file or an empty list if no file is provided.
                 - save_file_path (str): Path to the file where results are saved.
         """
-        results = []
-        loaded_dates = []
-        if not save_file_path:
-            starting_year = sorted(calendar_range.years)[0]
-            ending_year = sorted(calendar_range.years)[-1]
+        self.scraping_context.results = []
+        self.scraping_context.loaded_dates = []
+        if not self.scraping_parameters.save_file_path:
+            starting_year = min(self.scraping_parameters.calendar_range.years)
+            ending_year = max(self.scraping_parameters.calendar_range.years)
             now_time = time.strftime("%Y_%m_%d_%H_%M_%S")
-            save_file_path = f"scraping_results/time_dot_ir_{starting_year}_to_{ending_year}_{calendar_range.calenadr_type}_{now_time}.json"
-            print(f'Starting a new scraping process at "{save_file_path}"')
-            os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
+            self.scraping_parameters.save_file_path = f"scraping_results/time_dot_ir_{starting_year}_to_{ending_year}_{self.scraping_parameters.calendar_range.calenadr_type}_{now_time}.json"
+            print(
+                f'Starting a new scraping process at "{self.scraping_parameters.save_file_path}"'
+            )
+            os.makedirs(
+                os.path.dirname(self.scraping_parameters.save_file_path), exist_ok=True
+            )
         else:
-            if resume:
-                if not os.path.exists(save_file_path):
+            if self.scraping_parameters.resume:
+                if not os.path.exists(self.scraping_parameters.save_file_path):
                     print(
-                        f"File not found at {save_file_path}. Starting a new scraping process at this location."
+                        f"File not found at {self.scraping_parameters.save_file_path}. Starting a new scraping process at this location."
                     )
-                    os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
+                    os.makedirs(
+                        os.path.dirname(self.scraping_parameters.save_file_path),
+                        exist_ok=True,
+                    )
                 else:
-                    with open(save_file_path, "r", encoding="utf-8") as f:
-                        results = json.load(f)
-                        print(f"{len(results)} dates loaded successfully.")
-                        loaded_dates = [list(result.keys())[0] for result in results]
+                    with open(
+                        self.scraping_parameters.save_file_path, "r", encoding="utf-8"
+                    ) as f:
+                        self.scraping_context.results = json.load(f)
+                        print(
+                            f"{len(self.scraping_context.results)} dates loaded successfully."
+                        )
+
+                        self.scraping_context.loaded_dates = [
+                            list(result.keys())[0]
+                            for result in self.scraping_context.results
+                        ]
             else:
                 print(
-                    f"Previous data will be overwritten. Starting a new scraping process at {save_file_path}."
+                    f"Previous data will be overwritten. Starting a new scraping process at {self.scraping_parameters.save_file_path}."
                 )
-                os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
+                os.makedirs(
+                    os.path.dirname(self.scraping_parameters.save_file_path),
+                    exist_ok=True,
+                )
 
-        return results, loaded_dates, save_file_path
-
-    def _count_scraped_data(
-        self, scraping_parameters: ScrapingParameters, scraping_context: ScrapingContext
-    ) -> int:
+    def _count_scraped_data(self) -> int:
         """
         Counts the number of scraped data entries in a JSON file and updates the progress bar description.
 
@@ -249,17 +264,15 @@ class TimeDotIrScraper:
         Returns:
             int: The number of scraped data entries in the JSON file.
         """
-        with open(scraping_parameters.save_file_path, "r", encoding="utf-8") as f:
+        with open(self.scraping_parameters.save_file_path, "r", encoding="utf-8") as f:
             loaded_file = json.load(f)
             count = len(loaded_file)
-            scraping_context.pbar.set_description(
-                desc=f"Number of Scraped Data: {count}"
+            self.scraping_context.pbar.set_description(
+                desc=f"Total Number of Scraped Data={count}"
             )
         return count
 
-    def _update_save_file(
-        self, scraping_parameters: ScrapingParameters, scraping_context: ScrapingContext
-    ) -> None:
+    def _update_save_file(self) -> None:
         """
         Updates the save file with the given results.
 
@@ -270,15 +283,10 @@ class TimeDotIrScraper:
         Returns:
             None
         """
-        with open(scraping_parameters.save_file_path, "w", encoding="utf-8") as f:
-            json.dump(scraping_context.results, f, indent=4, ensure_ascii=False)
+        with open(self.scraping_parameters.save_file_path, "w", encoding="utf-8") as f:
+            json.dump(self.scraping_context.results, f, indent=4, ensure_ascii=False)
 
-    def _scrape_single_date(
-        self,
-        calendar_date: CalendarDate,
-        scraping_context: ScrapingContext,
-        scraping_parameters: ScrapingParameters,
-    ):
+    def _scrape_single_date(self, calendar_date: CalendarDate) -> None:
         """
         Scrapes data for a single date.
 
@@ -291,13 +299,12 @@ class TimeDotIrScraper:
             None
         """
         the_date = f"{calendar_date.year}/{calendar_date.month}/{calendar_date.day}"
-        if the_date in scraping_context.loaded_dates:
+        if the_date in self.scraping_context.loaded_dates:
             return
         result = self.request_single_day(calendar_date)
         if not "status" in result:
-            scraping_context.results.append({the_date: result})
-            scraping_context.pbar.update()
-            time.sleep(np.random.uniform(*scraping_parameters.sleep_range))
+            self.scraping_context.results.append({the_date: result})
+            self.scraping_context.pbar.update()
         else:
             if "invalid input!" in result["message"]:
                 return
@@ -306,29 +313,30 @@ class TimeDotIrScraper:
                 print(
                     f"Server responded invalid results. Retrying for {retry_count} times"
                 )
-                time.sleep(np.random.uniform(*scraping_parameters.sleep_range))
+                time.sleep(np.random.uniform(*self.scraping_parameters.sleep_range))
                 result = self.request_single_day(calendar_date)
                 retry_count += 1
-                if retry_count > scraping_parameters.retry_limit_warning:
+                if retry_count > self.scraping_parameters.retry_limit_warning:
                     print(
                         f"""Too much retrying! ({retry_count} times)
                         Check your network connection!"""
                     )
                 if (
-                    scraping_parameters.halt_limit
-                    and retry_count > scraping_parameters.halt_limit
+                    self.scraping_parameters.halt_limit
+                    and retry_count > self.scraping_parameters.halt_limit
                 ):
                     raise NetworkError(
                         """Halt the scraping process because of passing request halt limit.
                         Set `halt_limit` to `None` to prevent scraping from halting."""
                     )
-            scraping_context.results.append({the_date: result})
-            scraping_context.pbar.update()
-            time.sleep(np.random.uniform(*scraping_parameters.sleep_range))
-        self._update_save_file(scraping_parameters, scraping_context)
-        self._count_scraped_data(scraping_parameters, scraping_context)
+            self.scraping_context.results.append({the_date: result})
+            self.scraping_context.pbar.update()
+            time.sleep(np.random.uniform(*self.scraping_parameters.sleep_range))
+        self._update_save_file()
+        self._count_scraped_data()
+        time.sleep(np.random.uniform(*self.scraping_parameters.sleep_range))
 
-    def scrape(self, scraping_parameters: ScrapingParameters) -> list:
+    def scrape(self) -> list:
         """
         Scrapes data for the specified years, months, and days based on the given calendar type.
 
@@ -341,37 +349,31 @@ class TimeDotIrScraper:
         Raises:
             NetworkError: If the number of retries exceeds the halt limit.
         """
-        scraping_context = ScrapingContext(params=scraping_parameters)
-        (
-            scraping_context.results,
-            scraping_context.loaded_dates,
-            scraping_parameters.save_file_path,
-        ) = self._check_resumability(
-            scraping_parameters.calendar_range,
-            scraping_parameters.save_file_path,
-            scraping_parameters.resume,
+        self._check_resumability()
+        days = self._prepare_days()
+        months = self._prepare_months()
+        years = self._prepare_years()
+        total_days_to_scrape = len(self.scraping_parameters.calendar_range.years) * len(
+            self.scraping_parameters.calendar_range.months
+        ) * len(self.scraping_parameters.calendar_range.days) - len(
+            self.scraping_context.loaded_dates
         )
-        days = self._prepare_days(scraping_parameters.calendar_range.days)
-        months = self._prepare_months(scraping_parameters.calendar_range.months)
-        years = self._prepare_years(scraping_parameters.calendar_range.years)
-        scraping_context.pbar = tqdm(
-            total=len(years) * len(months) * len(days)
-            - len(scraping_context.loaded_dates)
-        )
-        for year in sorted(years):
+        self.scraping_context.pbar.total = total_days_to_scrape
+        self.scraping_context.pbar.desc = "Initializing the scraping process..."
+        print(f"Total number of dates to scrape: {total_days_to_scrape}")
+
+        for year in years:
             for month in months:
                 for day in days:
                     calendar_date = CalendarDate(
-                        scraping_parameters.calendar_range.calenadr_type,
+                        self.scraping_parameters.calendar_range.calenadr_type,
                         year,
                         month,
                         day,
                     )
-                    self._scrape_single_date(
-                        calendar_date, scraping_context, scraping_parameters
-                    )
-        with open(scraping_parameters.save_file_path, "r", encoding="utf-8") as f:
+                    self._scrape_single_date(calendar_date)
+        with open(self.scraping_parameters.save_file_path, "r", encoding="utf-8") as f:
             rs = json.load(f)
             print(f"{len(rs)} dates scraped successfully.")
-        scraping_context.pbar.close()
-        return scraping_context.results
+        self.scraping_context.pbar.close()
+        return self.scraping_context.results
