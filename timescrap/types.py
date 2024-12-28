@@ -13,7 +13,7 @@ Dependencies:
     tqdm: Provides a fast, extensible progress bar for loops and other operations."""
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Union
 
 from tqdm import tqdm
 
@@ -50,8 +50,8 @@ class CalendarRange:
 
     calenadr_type: Literal["gregorian", "jalali"]
     years: list
-    months: set | list | Literal["whole_year"]
-    days: set | list | Literal["whole_month"]
+    months: Union[set, list, Literal["whole_year"]]
+    days: Union[set, list, Literal["whole_month"]]
 
 
 @dataclass
@@ -92,13 +92,6 @@ class ScrapingContext:
     """
 
     params: ScrapingParameters
-    pbar: tqdm = field(
-        default_factory=lambda: tqdm(
-            total=0,
-            position=0,
-            leave=True,
-            desc="Initializing the scraping process...",
-        )
-    )
+    pbar: tqdm
     loaded_dates: list = field(default_factory=list)
     results: list = field(default_factory=list)
