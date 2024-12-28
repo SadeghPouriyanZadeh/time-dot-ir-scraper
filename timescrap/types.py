@@ -72,7 +72,7 @@ class ScrapingParameters:
     sleep_range: tuple[int, int]
     retry_limit_warning: int
     halt_limit: int
-    save_file_path: str | None
+    save_file_path: str
     resume: bool
 
 
