@@ -214,7 +214,7 @@ class TimeDotIrScraper:
             ending_year = sorted(calendar_range.years)[-1]
             now_time = time.strftime("%Y_%m_%d_%H_%M_%S")
             os.makedirs("scraping_results", exist_ok=True)
-            save_file_path = f"scraping_results/time_ir_{starting_year}_to_{ending_year}_{calendar_range.calenadr_type}_{now_time}.json"
+            save_file_path = f"scraping_results/time_dot_ir_{starting_year}_to_{ending_year}_{calendar_range.calenadr_type}_{now_time}.json"
         elif save_file_path and resume:
             with open(save_file_path, "r", encoding="utf-8") as f:
                 loaded_results = json.load(f)
